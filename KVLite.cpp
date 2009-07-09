@@ -25,6 +25,8 @@
 #include <sys/wait.h>
 #include <stdlib.h>
 
+#include "md5.h"
+
 #define ISspace(x) isspace((int)(x))
 
 //#define SERVER_STRING "Server: kvlite/0.1.0\r\n"
@@ -456,10 +458,14 @@ int main(void) {
     int client_sock = -1;
     struct sockaddr_in client_name;
     socklen_t client_name_len = sizeof(client_name);
+    char hash[33];
 
     server_sock = startup(&port);
     printf("kvlite running on port %d\n", port);
-
+    
+    md5("hello",hash);
+    printf("md5 test %s\n",hash);
+    
     while (1) {
         client_sock = accept(server_sock,
                                    (struct sockaddr *)&client_name,
