@@ -30,7 +30,10 @@
 /*
 #define SERVER_STRING "Server: kvlite/0.1.0\r\n"
 */
-const char * STORE = "/tmp/kvstore/";
+char * DEFAULT_STORE = "/tmp/kvstore/";
+char * STORE = NULL;
+
+const int BUFFER_SIZE = 1024;
 
 //#define ENABLE_LOGGING
 #ifdef ENABLE_LOGGING
@@ -47,6 +50,7 @@ void headers(int);
 void not_found(int);
 int startup(u_short *);
 void unimplemented(int);
+void urldecode(char * text);
 
 #ifdef ENABLE_LOGGING
 int log(char * message);
@@ -106,10 +110,13 @@ void accept_request(int client) {
     close(client);
 }
 
+/**********************************************************************/
+
 void get(int client, char * key) {
     char buf[1024];
     FILE * file;
     char hash[33];
+    int num_read;
     
     md5(key,hash);
     #ifdef ENABLE_LOGGING
@@ -124,13 +131,15 @@ void get(int client, char * key) {
     file = fopen( buf, "r" );
     if ( file ) {
         headers(client);
-        while ( fread(buf,1,1024,file) ) {
-            send(client, buf, strlen(buf), 0);
+        while ( (num_read = fread(buf,1,1024,file)) ) {
+            send(client, buf, num_read, 0);
         }
         fclose(file);
     } else {
         not_found(client);
     }}   
+
+/**********************************************************************/
 
 void set(int client, char * key, char * value) {
     char buf[1024];
@@ -149,6 +158,7 @@ void set(int client, char * key, char * value) {
     
     file = fopen( buf, "w" );
     if ( file ) {
+        urldecode(value);
         fputs (value,file);
         fclose(file);
         headers(client);
@@ -161,6 +171,82 @@ void set(int client, char * key, char * value) {
         #endif
         not_found(client);
     }
+}
+
+/**********************************************************************/
+
+// Converts a hexadecimal string to integer
+int xtoi(const char* xs)
+{
+ size_t szlen = strlen(xs);
+ int i, xv, fact, result;
+
+ if (szlen > 0)
+ {
+  // Converting more than 32bit hexadecimal value?
+  if (szlen>8) return 0; // exit
+
+  // Begin conversion here
+  result = 0;
+  fact = 1;
+
+  // Run until no more character to convert
+  for(i=szlen-1; i>=0 ;i--)
+  {
+   if (isxdigit(*(xs+i)))
+   {
+    if (*(xs+i)>=97)
+    {
+     xv = ( *(xs+i) - 97) + 10;
+    }
+    else if ( *(xs+i) >= 65)
+    {
+     xv = (*(xs+i) - 65) + 10;
+    }
+    else
+    {
+     xv = *(xs+i) - 48;
+    }
+    result += (xv * fact);
+    fact *= 16;
+   }
+   else
+   {
+    // Conversion was abnormally terminated
+    // by non hexadecimal digit, hence
+    // returning only the converted with
+    // an error value 4 (illegal hex character)
+    return 0;
+   }
+  }
+ }
+
+ // Nothing to convert
+ return result;
+}
+
+/**********************************************************************/
+
+void urldecode(char * text) {
+    int i = 0;
+    int j = 0;
+    char buf[3];
+    
+    for (i=0; text[i] != 0x00 && i < BUFFER_SIZE; i++ ) {
+        if ( text[i] == '%' ) {
+
+            buf[0] = text[i+1];
+            buf[1] = text[i+2];
+            buf[2] = 0x00;
+            text[j] = (char)xtoi(buf);
+            i = i + 2;
+            j++;
+        } else {
+            text[j] = text[i];
+            j++;
+        }
+    }
+    text[j] = 0x00;
 }
 
 /**********************************************************************/
@@ -369,11 +455,17 @@ int main(int argc, char *argv[]) {
     struct sockaddr_in client_name;
     socklen_t client_name_len = sizeof(client_name);
 
-    if ( argc != 2 ) {
-        printf("Usage: kvlite port\n");
+    if ( argc < 2 ) {
+        printf("Usage: kvlite port [store]\n");
+        printf("Example: kvlite 5461 /var/kvlitestore/ \n");
         exit(1);
     } else {
         port = atoi(argv[1]);
+        if ( argc == 3 ) {
+            STORE = argv[2];
+        } else {
+            STORE = DEFAULT_STORE;
+        }
     }
     
     server_sock = startup(&port);
