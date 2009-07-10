@@ -1,12 +1,12 @@
 /* This is a simple key value store accessible over http.
- * Based off of code by J. David Blackstone
+ * Based off web server code by J. David Blackstone
  * http://sourceforge.net/projects/tinyhttpd/
  */
  
 /* The syntax is simple
- * kvlite always accepts GET requests
+ * kvlite accepts the following GET requests:
  * /get/[key]
- * /set?[key]=[value]
+ * /set/key?[value]
  */
 
 #include <stdio.h>
@@ -21,6 +21,7 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <stdlib.h>
+#include <time.h>
 
 #include "md5.h"
 
@@ -29,7 +30,15 @@
 /*
 #define SERVER_STRING "Server: kvlite/0.1.0\r\n"
 */
+const char * STORE = "/tmp/kvstore/";
 
+//#define ENABLE_LOGGING
+#ifdef ENABLE_LOGGING
+const char * LOG_FILE = "/tmp/kvlite.log";
+#endif
+
+void get(int client, char * key);
+void set(int client, char * key, char * value);
 void accept_request(int);
 void bad_request(int);
 void error_die(const char *);
@@ -39,6 +48,10 @@ void not_found(int);
 int startup(u_short *);
 void unimplemented(int);
 
+#ifdef ENABLE_LOGGING
+int log(char * message);
+#endif
+
 /**********************************************************************/
 /* A request has caused a call to accept() on the server port to
  * return.  Process the request appropriately.
@@ -47,12 +60,10 @@ void unimplemented(int);
 void accept_request(int client) {
     char buf[1024];
     int numchars;
+    char * value;
     char method[255];
     char url[255];
     size_t i, j;
-    int cgi = 0;      /* becomes true if server decides this is a CGI
-                                * program */
-    char *query_string = NULL;
 
     /* Parse request method */
     numchars = get_line(client, buf, sizeof(buf));
@@ -73,28 +84,83 @@ void accept_request(int client) {
     }
     url[i] = '\0';
 
-    /* Remove GET parameters from URL */
-    if (strcasecmp(method, "GET") == 0) {
-        query_string = url;
-        while ((*query_string != '?') && (*query_string != '\0'))
-            query_string++;
-        if (*query_string == '?') {
-            cgi = 1;
-   *query_string = '\0';
-            query_string++;
-        }
-    }
-
     /* read & discard headers */
     while ((numchars > 0) && strcmp("\n", buf))  
         numchars = get_line(client, buf, sizeof(buf));
 
-    headers(client);
-
-    sprintf(buf, "<p>Hello World\r\n\r\n");
-    send(client, buf, strlen(buf), 0);    
+    if( strncasecmp(url,"/get/",5) == 0 ) {
+        get(client, url+5);
+    } else if ( strncasecmp(url,"/set/",5) == 0 ) {
+        value = strchr(url,'?');
+        if ( value != NULL ) {
+            value[0] = 0x00;
+            value++;
+            set(client, url+5, value);
+        } else {
+            not_found(client);
+        }
+    } else {
+        not_found(client);
+    }
     
     close(client);
+}
+
+void get(int client, char * key) {
+    char buf[1024];
+    FILE * file;
+    char hash[33];
+    
+    md5(key,hash);
+    #ifdef ENABLE_LOGGING
+    sprintf(buf,"get value for %s (%s)\n",key,hash);
+    log(buf);
+    #endif
+    
+    buf[0] = 0x00;
+    strcat(buf, STORE);
+    strcat(buf, hash);
+    
+    file = fopen( buf, "r" );
+    if ( file ) {
+        headers(client);
+        while ( fread(buf,1,1024,file) ) {
+            send(client, buf, strlen(buf), 0);
+        }
+        fclose(file);
+    } else {
+        not_found(client);
+    }}   
+
+void set(int client, char * key, char * value) {
+    char buf[1024];
+    FILE * file;
+    char hash[33];
+    
+    md5(key,hash);
+    #ifdef ENABLE_LOGGING
+    sprintf(buf,"set %s (%s) to %s\n",key,hash,value);
+    log(buf);
+    #endif
+    
+    buf[0] = 0x00;
+    strcat(buf, STORE);
+    strcat(buf, hash);
+    
+    file = fopen( buf, "w" );
+    if ( file ) {
+        fputs (value,file);
+        fclose(file);
+        headers(client);
+        sprintf(buf, "set %s\n",key);
+        send(client, buf, strlen(buf), 0);
+    } else {
+        #ifdef ENABLE_LOGGING
+        sprintf(buf, "not found: %s\n",buf);
+        log(buf);
+        #endif
+        not_found(client);
+    }
 }
 
 /**********************************************************************/
@@ -146,11 +212,9 @@ int get_line(int sock, char *buf, int size) {
 
     while ((i < size - 1) && (c != '\n')) {
         n = recv(sock, &c, 1, 0);
-  /* DEBUG printf("%02X\n", c); */
         if (n > 0) {
             if (c == '\r') {
                 n = recv(sock, &c, 1, MSG_PEEK);
-                /* DEBUG printf("%02X\n", c); */
                 if ((n > 0) && (c == '\n'))
                  recv(sock, &c, 1, 0);
                 else
@@ -205,13 +269,9 @@ void not_found(int client) {
     send(client, buf, strlen(buf), 0);
     sprintf(buf, "\r\n");
     send(client, buf, strlen(buf), 0);
-    sprintf(buf, "<HTML><TITLE>Not Found</TITLE>\r\n");
+    sprintf(buf, "<HTML><TITLE>404: Not Found</TITLE>\r\n");
     send(client, buf, strlen(buf), 0);
-    sprintf(buf, "<BODY><P>The server could not fulfill\r\n");
-    send(client, buf, strlen(buf), 0);
-    sprintf(buf, "your request because the resource specified\r\n");
-    send(client, buf, strlen(buf), 0);
-    sprintf(buf, "is unavailable or nonexistent.\r\n");
+    sprintf(buf, "<BODY><h1>404: Not Found</h1>\r\n");
     send(client, buf, strlen(buf), 0);
     sprintf(buf, "</BODY></HTML>\r\n");
     send(client, buf, strlen(buf), 0);
@@ -279,26 +339,57 @@ void unimplemented(int client) {
 
 /**********************************************************************/
 
-int main(void) {
+#ifdef ENABLE_LOGGING
+int log(char * message) {
+    static FILE * log_file = NULL;
+    char buf[256];
+    
+    if ( !log_file ) {
+        log_file = fopen ( LOG_FILE , "a" );
+    }
+    
+    if ( log_file ) {
+        time_t rawtime = time(NULL);
+        sprintf(buf,"%s",ctime(&rawtime));
+        *strchr(buf, '\n')=0x00;
+        fprintf(log_file,"%s - %s\n",buf,message);
+        fclose(log_file);
+        return 0;
+    }
+    return -1;
+}
+#endif 
+
+/**********************************************************************/
+
+int main(int argc, char *argv[]) {
     int server_sock = -1;
     u_short port = 0;
     int client_sock = -1;
     struct sockaddr_in client_name;
     socklen_t client_name_len = sizeof(client_name);
-    /*char hash[33];*/
 
+    if ( argc != 2 ) {
+        printf("Usage: kvlite port\n");
+        exit(1);
+    } else {
+        port = atoi(argv[1]);
+    }
+    
     server_sock = startup(&port);
     printf("kvlite running on port %d\n", port);
+    #ifdef ENABLE_LOGGING
+    log("kvlite started");
+    #endif
     
-    /*md5("hello",hash);
-    printf("md5 test %s\n",hash);
-    */
     while (1) {
         client_sock = accept(server_sock,
                                    (struct sockaddr *)&client_name,
                                    &client_name_len);
         if (client_sock == -1) error_die("accept");
-        printf("Client Connected\n");
+        #ifdef ENABLE_LOGGING
+        log("client connected");
+        #endif
         accept_request(client_sock);
     }
 
