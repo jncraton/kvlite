@@ -26,7 +26,9 @@
 
 #define ISspace(x) isspace((int)(x))
 
+/*
 #define SERVER_STRING "Server: kvlite/0.1.0\r\n"
+*/
 
 void accept_request(int);
 void bad_request(int);
