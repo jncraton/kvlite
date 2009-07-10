@@ -7,6 +7,7 @@
  * kvlite always accepts GET requests
  * /get/[key]
  * /set?[key]=[value]
+ */
 
 #include <stdio.h>
 #include <sys/socket.h>
