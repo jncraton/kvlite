@@ -6,7 +6,8 @@
 /* The syntax is simple
  * kvlite accepts the following GET requests:
  * /get/[key]
- * /set/key?[value]
+ * /set/[key]?v=[value]
+ * /edit/[key]
  */
 
 #include <stdio.h>
@@ -33,7 +34,9 @@
 char * DEFAULT_STORE = "/tmp/kvstore/";
 char * STORE = NULL;
 
-const int BUFFER_SIZE = 1024;
+const unsigned int BUFFER_SIZE = 16384;
+
+u_short PORT = 4444;
 
 //#define ENABLE_LOGGING
 #ifdef ENABLE_LOGGING
@@ -42,6 +45,7 @@ const char * LOG_FILE = "/tmp/kvlite.log";
 
 void get(int client, char * key);
 void set(int client, char * key, char * value);
+void edit(int client, char * key);
 void accept_request(int);
 void bad_request(int);
 void error_die(const char *);
@@ -62,11 +66,11 @@ int log(char * message);
  * Parameters: the socket connected to the client */
 /**********************************************************************/
 void accept_request(int client) {
-    char buf[1024];
+    char buf[BUFFER_SIZE];
     int numchars;
     char * value;
     char method[255];
-    char url[255];
+    char url[BUFFER_SIZE];
     size_t i, j;
 
     /* Parse request method */
@@ -80,9 +84,9 @@ void accept_request(int client) {
 
     /* Parse request URL */
     i = 0;
-    while (ISspace(buf[j]) && (j < sizeof(buf)))
+    while (ISspace(buf[j]) && (j < BUFFER_SIZE))
         j++;
-    while (!ISspace(buf[j]) && (i < sizeof(url) - 1) && (j < sizeof(buf))) {
+    while (!ISspace(buf[j]) && (i < BUFFER_SIZE - 1) && (j < BUFFER_SIZE)) {
         url[i] = buf[j];
         i++; j++;
     }
@@ -90,7 +94,7 @@ void accept_request(int client) {
 
     /* read & discard headers */
     while ((numchars > 0) && strcmp("\n", buf))  
-        numchars = get_line(client, buf, sizeof(buf));
+        numchars = get_line(client, buf, BUFFER_SIZE);
 
     if( strncasecmp(url,"/get/",5) == 0 ) {
         get(client, url+5);
@@ -98,11 +102,14 @@ void accept_request(int client) {
         value = strchr(url,'?');
         if ( value != NULL ) {
             value[0] = 0x00;
-            value++;
+            /* skip over the null and "v=" */
+            value+=3;
             set(client, url+5, value);
         } else {
             not_found(client);
         }
+    } else if ( strncasecmp(url,"/edit/",6) == 0 ) {
+        edit(client, url+6);
     } else {
         not_found(client);
     }
@@ -113,7 +120,7 @@ void accept_request(int client) {
 /**********************************************************************/
 
 void get(int client, char * key) {
-    char buf[1024];
+    char buf[BUFFER_SIZE];
     FILE * file;
     char hash[33];
     int num_read;
@@ -131,18 +138,19 @@ void get(int client, char * key) {
     file = fopen( buf, "r" );
     if ( file ) {
         headers(client);
-        while ( (num_read = fread(buf,1,1024,file)) ) {
+        while ( (num_read = fread(buf,1,BUFFER_SIZE,file)) ) {
             send(client, buf, num_read, 0);
         }
         fclose(file);
     } else {
         not_found(client);
-    }}   
+    }
+}   
 
 /**********************************************************************/
 
 void set(int client, char * key, char * value) {
-    char buf[1024];
+    char buf[BUFFER_SIZE];
     FILE * file;
     char hash[33];
     
@@ -172,6 +180,46 @@ void set(int client, char * key, char * value) {
         not_found(client);
     }
 }
+
+/**********************************************************************/
+
+void edit(int client, char * key) {
+    char buf[BUFFER_SIZE];
+    FILE * file;
+    char hash[33];
+    int num_read;
+    
+    md5(key,hash);
+    #ifdef ENABLE_LOGGING
+    sprintf(buf,"edit value for %s (%s)\n",key,hash);
+    log(buf);
+    #endif
+    
+    buf[0] = 0x00;
+    strcat(buf, STORE);
+    strcat(buf, hash);
+    
+    file = fopen( buf, "r" );
+    if ( file ) {
+        headers(client);
+        sprintf(buf, "<form action=\"/set/%s\">",key);
+        send(client, buf, strlen(buf), 0);
+        sprintf(buf, "<textarea name=\"v\" rows=\"30\" cols=\"80\">");
+        send(client, buf, strlen(buf), 0);
+        while ( (num_read = fread(buf,1,BUFFER_SIZE,file)) ) {
+            send(client, buf, num_read, 0);
+        }
+        fclose(file);
+        sprintf(buf, "</textarea>");
+        send(client, buf, strlen(buf), 0);
+        sprintf(buf, "<input type=\"submit\" value=\"save\">");
+        send(client, buf, strlen(buf), 0);
+        sprintf(buf, "</form>");
+        send(client, buf, strlen(buf), 0);
+    } else {
+        not_found(client);
+    }
+}   
 
 /**********************************************************************/
 
@@ -228,18 +276,20 @@ int xtoi(const char* xs)
 /**********************************************************************/
 
 void urldecode(char * text) {
-    int i = 0;
-    int j = 0;
+    unsigned int i = 0;
+    unsigned int j = 0;
     char buf[3];
     
     for (i=0; text[i] != 0x00 && i < BUFFER_SIZE; i++ ) {
         if ( text[i] == '%' ) {
-
             buf[0] = text[i+1];
             buf[1] = text[i+2];
             buf[2] = 0x00;
             text[j] = (char)xtoi(buf);
             i = i + 2;
+            j++;
+        } else if ( text[i] == '+' ) {
+            text[j] = ' ';
             j++;
         } else {
             text[j] = text[i];
@@ -254,7 +304,7 @@ void urldecode(char * text) {
  * Parameters: client socket */
 /**********************************************************************/
 void bad_request(int client) {
-    char buf[1024];
+    char buf[BUFFER_SIZE];
 
     sprintf(buf, "HTTP/1.0 400 BAD REQUEST\r\n");
     send(client, buf, sizeof(buf), 0);
@@ -323,7 +373,7 @@ int get_line(int sock, char *buf, int size) {
  *             the name of the file */
 /**********************************************************************/
 void headers(int client) {
-    char buf[1024];
+    char buf[BUFFER_SIZE];
 
     strcpy(buf, "HTTP/1.0 200 OK\r\n");
     send(client, buf, strlen(buf), 0);
@@ -343,7 +393,7 @@ void headers(int client) {
 /* Give a client a 404 not found status message. */
 /**********************************************************************/
 void not_found(int client) {
-    char buf[1024];
+    char buf[BUFFER_SIZE];
 
     sprintf(buf, "HTTP/1.0 404 NOT FOUND\r\n");
     send(client, buf, strlen(buf), 0);
@@ -401,7 +451,7 @@ int startup(u_short *port) {
  * Parameter: the client socket */
 /**********************************************************************/
 void unimplemented(int client) {
-    char buf[1024];
+    char buf[BUFFER_SIZE];
 
     sprintf(buf, "HTTP/1.0 501 Method Not Implemented\r\n");
     send(client, buf, strlen(buf), 0);
@@ -450,7 +500,6 @@ int log(char * message) {
 
 int main(int argc, char *argv[]) {
     int server_sock = -1;
-    u_short port = 0;
     int client_sock = -1;
     struct sockaddr_in client_name;
     socklen_t client_name_len = sizeof(client_name);
@@ -460,7 +509,7 @@ int main(int argc, char *argv[]) {
         printf("Example: kvlite 5461 /var/kvlitestore/ \n");
         exit(1);
     } else {
-        port = atoi(argv[1]);
+        PORT = atoi(argv[1]);
         if ( argc == 3 ) {
             STORE = argv[2];
         } else {
@@ -468,8 +517,8 @@ int main(int argc, char *argv[]) {
         }
     }
     
-    server_sock = startup(&port);
-    printf("kvlite running on port %d\n", port);
+    server_sock = startup(&PORT);
+    printf("kvlite running on port %d\n", PORT);
     #ifdef ENABLE_LOGGING
     log("kvlite started");
     #endif
