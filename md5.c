@@ -1,3 +1,8 @@
+/* Modified simple md5 function from:
+ * Bob Trower 03/11/05
+ * http://www.advogato.org/article/830.html
+ */
+
 #include "md5.h"
 
 /*
